@@ -79,6 +79,12 @@ pub fn transform_claude_request_in(
 
     if let Some(tools_val) = tools {
         inner_request["tools"] = tools_val;
+        // 显式设置工具配置模式为 VALIDATED
+        inner_request["toolConfig"] = json!({
+            "functionCallingConfig": {
+                "mode": "VALIDATED"
+            }
+        });
     }
 
     // Inject googleSearch tool if needed (and not already done by build_tools)
@@ -306,6 +312,10 @@ fn build_contents(
                     "thought": true
                 }));
             }
+        }
+
+        if parts.is_empty() {
+            continue;
         }
 
         contents.push(json!({

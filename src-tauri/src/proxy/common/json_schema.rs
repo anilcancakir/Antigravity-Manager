@@ -69,72 +69,62 @@ fn flatten_refs(map: &mut serde_json::Map<String, Value>, defs: &serde_json::Map
 fn clean_json_schema_recursive(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            // 1. 移除不支持的字段
-            let fields_to_remove = [
-                "$schema",
-                // "$defs", "definitions", "$ref", // 这些已经在上面处理了
-                "additionalProperties",
-                "format",
-                "default",
-                "uniqueItems",
-                // Claude/JSONSchema extensions not accepted by Gemini
-                "enumCaseInsensitive",
-                "enumNormalizeWhitespace",
-                "minLength",
-                "maxLength",
-                "minimum",
-                "maximum",
-                "exclusiveMinimum",
-                "exclusiveMaximum",
-                "multipleOf",
-                "minItems",
-                "maxItems",
-                "pattern",
-                "const",
-                "minProperties",
-                "maxProperties",
-                "propertyNames",
-                "patternProperties",
-                "contains",
-                "minContains",
-                "maxContains",
-                "if",
-                "then",
-                "else",
-                "not",
-                "anyOf", // Gemini 其实也对此有限制，尽量保留或简化
-                "oneOf",
-                "allOf"
+            // 1. 收集并处理校验字段 (Soft-Remove: Move constraints to description)
+            let validation_fields = [
+                ("minLength", "minLen"),
+                ("maxLength", "maxLen"),
+                ("minimum", "min"),
+                ("maximum", "max"),
+                ("minItems", "minItems"),
+                ("maxItems", "maxItems"),
+                ("exclusiveMinimum", "exclMin"),
+                ("exclusiveMaximum", "exclMax"),
+                ("multipleOf", "multipleOf"),
+                ("pattern", "pattern"),
             ];
 
-            // 注意：Gemini 对 anyOf/oneOf 支持有限，可能需要进一步简化，
-            // 但目前先只移除明确不支持的元数据关键字
-            for field in fields_to_remove {
-                // 对于 anyOf/oneOf/allOf，我们暂不移除，因为这涉及逻辑结构
-                if field == "anyOf" || field == "oneOf" || field == "allOf" {
-                    continue; 
+            let mut constraints = Vec::new();
+            for (field, label) in validation_fields {
+                if let Some(val) = map.remove(field) {
+                    constraints.push(format!("{}: {}", label, val));
                 }
+            }
+
+            // 2. 将约束信息追加到描述
+            if !constraints.is_empty() {
+                let suffix = format!(" [Validation: {}]", constraints.join(", "));
+                let desc = map.entry("description".to_string()).or_insert_with(|| Value::String("".to_string()));
+                if let Value::String(s) = desc {
+                    s.push_str(&suffix);
+                }
+            }
+
+            // 3. 移除其他会干扰上游的非标准/冲突字段
+            let other_fields_to_remove = [
+                "$schema",
+                "additionalProperties",
+                "enumCaseInsensitive",
+                "enumNormalizeWhitespace",
+                "uniqueItems",
+                "format",
+                "default",
+            ];
+            for field in other_fields_to_remove {
                 map.remove(field);
             }
 
-            // 2. 处理 type 字段 (Union Types -> Primary Type + Uppercase)
+            // 4. 处理 type 字段 (Gemini 要求小写，且支持联合类型)
             if let Some(type_val) = map.get_mut("type") {
                 match type_val {
                     Value::String(s) => {
-                        *type_val = Value::String(s.to_uppercase());
+                        *type_val = Value::String(s.to_lowercase());
                     }
                     Value::Array(arr) => {
-                        // Handle ["string", "null"] -> select first non-null
-                        let mut selected_type = "STRING".to_string(); // Default fallback
                         for item in arr {
                             if let Value::String(s) = item {
-                                if s != "null" {
-                                    selected_type = s.to_uppercase();
-                                    break;
-                                }
+                                *item = Value::String(s.to_lowercase());
                             }
                         }
-                        *type_val = Value::String(selected_type);
                     }
                     _ => {}
                 }
@@ -151,5 +141,71 @@ fn clean_json_schema_recursive(value: &mut Value) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_clean_json_schema_draft_2020_12() {
+        let mut schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "city"
+                },
+                "unit": {
+                    "type": ["string", "null"],
+                    "default": "celsius"
+                }
+            },
+            "required": ["location"]
+        });
+
+        clean_json_schema(&mut schema);
+
+        // 1. 验证类型保持小写
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["properties"]["location"]["type"], "string");
+
+        // 2. 验证标准字段被转换并移动到描述 (Advanced Soft-Remove)
+        assert!(schema["properties"]["location"].get("minLength").is_none());
+        assert!(schema["properties"]["location"].get("format").is_none());
+        assert!(schema["properties"]["location"]["description"].as_str().unwrap().contains("minLen: 1"));
+
+        // 3. 验证联合类型保持数组形式且小写
+        assert_eq!(schema["properties"]["unit"]["type"], json!(["string", "null"]));
+        
+        // 4. 验证元数据字段被移除
+        assert!(schema.get("$schema").is_none());
+    }
+
+    #[test]
+    fn test_flatten_refs() {
+        let mut schema = json!({
+            "$defs": {
+                "Address": {
+                    "type": "object",
+                    "properties": {
+                        "city": { "type": "string" }
+                    }
+                }
+            },
+            "properties": {
+                "home": { "$ref": "#/$defs/Address" }
+            }
+        });
+
+        clean_json_schema(&mut schema);
+
+        // 验证引用被展开且类型转为小写
+        assert_eq!(schema["properties"]["home"]["type"], "object");
+        assert_eq!(schema["properties"]["home"]["properties"]["city"]["type"], "string");
     }
 }
