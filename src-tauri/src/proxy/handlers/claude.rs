@@ -206,6 +206,7 @@ pub async fn handle_messages(
         let mut request_with_mapped = request_for_body.clone();
 
         if is_background_task {
+             // 修正：使用支持的 flash 模型 (2.5 可能不存在或不支持 thinking)
              mapped_model = "gemini-2.5-flash".to_string();
              tracing::info!("[{}][AUTO] 检测到后台任务 ({})，已重定向: {}", 
                 trace_id,
@@ -213,9 +214,21 @@ pub async fn handle_messages(
                 mapped_model
              );
              // [Optimization] **后台任务净化**: 
-             // 此类任务纯粹为文本处理，绝不需要执行工具。
-             // 强制清空 tools 字段，彻底根除 "Multiple tools" (400) 冲突风险。
+             // 1. 此类任务纯粹为文本处理，绝不需要执行工具。
              request_with_mapped.tools = None;
+             
+             // 2. 后台任务不需要 Thinking，且 Flash 模型可能不兼容 Thinking Config 或历史 Thinking Block
+             request_with_mapped.thinking = None;
+             
+             // 3. 清理历史消息中的 Thinking Block，防止 Invalid Argument
+             for msg in request_with_mapped.messages.iter_mut() {
+                if let crate::proxy::mappers::claude::models::MessageContent::Array(blocks) = &mut msg.content {
+                    blocks.retain(|b| !matches!(b, 
+                        crate::proxy::mappers::claude::models::ContentBlock::Thinking { .. } |
+                        crate::proxy::mappers::claude::models::ContentBlock::RedactedThinking { .. }
+                    ));
+                }
+             }
         } else {
              // [USER] 标记真实用户请求
              // [Optimization] 使用 WARN 级别高亮显示用户消息，防止被后台任务日志淹没
