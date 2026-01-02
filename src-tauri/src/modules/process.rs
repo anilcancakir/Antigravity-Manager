@@ -712,8 +712,8 @@ pub fn start_antigravity() -> Result<(), String> {
         .and_then(|c| c.antigravity_executable.clone());
     let args = config.and_then(|c| c.antigravity_args.clone());
 
-    if let Some(path_str) = manual_path {
-        let path = std::path::PathBuf::from(&path_str);
+    if let Some(mut path_str) = manual_path {
+        let mut path = std::path::PathBuf::from(&path_str);
 
         #[cfg(target_os = "macos")]
         {
@@ -920,12 +920,11 @@ fn get_process_info() -> (Option<std::path::PathBuf>, Option<Vec<String>>) {
             let args = Some(args);
             #[cfg(target_os = "macos")]
             {
-                // macOS: 排除辅助进程，只匹配主程序，并检查 Frameworks
+                // macOS: 排除辅助进程,只匹配主程序,并检查 Frameworks
                 if exe_path.contains("antigravity.app")
                     && !is_helper
                     && !exe_path.contains("frameworks")
                 {
-                    let args = Some(args);
                     // 尝试提取 .app 路径以便更好地支持 open 命令
                     if let Some(app_idx) = exe_path.find(".app") {
                         let app_path_str = &exe.to_string_lossy()[..app_idx + 4];

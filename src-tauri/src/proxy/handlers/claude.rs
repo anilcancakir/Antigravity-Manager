@@ -21,6 +21,143 @@ use std::sync::atomic::Ordering;
 
 const MAX_RETRY_ATTEMPTS: usize = 3;
 
+// ===== 统一退避策略模块 =====
+
+/// 重试策略枚举
+#[derive(Debug, Clone)]
+enum RetryStrategy {
+    /// 不重试，直接返回错误
+    NoRetry,
+    /// 固定延迟
+    FixedDelay(Duration),
+    /// 线性退避：base_ms * (attempt + 1)
+    LinearBackoff { base_ms: u64 },
+    /// 指数退避：base_ms * 2^attempt，上限 max_ms
+    ExponentialBackoff { base_ms: u64, max_ms: u64 },
+}
+
+/// 根据错误状态码和错误信息确定重试策略
+fn determine_retry_strategy(
+    status_code: u16,
+    error_text: &str,
+    retried_without_thinking: bool,
+) -> RetryStrategy {
+    match status_code {
+        // 400 错误：Thinking 签名失败
+        400 if !retried_without_thinking
+            && (error_text.contains("Invalid `signature`")
+                || error_text.contains("thinking.signature")
+                || error_text.contains("thinking.thinking")) =>
+        {
+            // 固定 200ms 延迟后重试
+            RetryStrategy::FixedDelay(Duration::from_millis(200))
+        }
+
+        // 429 限流错误
+        429 => {
+            // 优先使用服务端返回的 Retry-After
+            if let Some(delay_ms) = crate::proxy::upstream::retry::parse_retry_delay(error_text) {
+                let actual_delay = delay_ms.saturating_add(200).min(10_000);
+                RetryStrategy::FixedDelay(Duration::from_millis(actual_delay))
+            } else {
+                // 否则使用线性退避：1s, 2s, 3s
+                RetryStrategy::LinearBackoff { base_ms: 1000 }
+            }
+        }
+
+        // 503 服务不可用 / 529 服务器过载
+        503 | 529 => {
+            // 指数退避：1s, 2s, 4s, 8s
+            RetryStrategy::ExponentialBackoff {
+                base_ms: 1000,
+                max_ms: 8000,
+            }
+        }
+
+        // 500 服务器内部错误
+        500 => {
+            // 线性退避：500ms, 1s, 1.5s
+            RetryStrategy::LinearBackoff { base_ms: 500 }
+        }
+
+        // 401/403 认证/权限错误：可重试（轮换账号）
+        401 | 403 => RetryStrategy::FixedDelay(Duration::from_millis(100)),
+
+        // 其他错误：不重试
+        _ => RetryStrategy::NoRetry,
+    }
+}
+
+/// 执行退避策略并返回是否应该继续重试
+async fn apply_retry_strategy(
+    strategy: RetryStrategy,
+    attempt: usize,
+    status_code: u16,
+    trace_id: &str,
+) -> bool {
+    match strategy {
+        RetryStrategy::NoRetry => {
+            debug!("[{}] Non-retryable error {}, stopping", trace_id, status_code);
+            false
+        }
+
+        RetryStrategy::FixedDelay(duration) => {
+            info!(
+                "[{}] ⏱️  Retry with fixed delay: status={}, attempt={}/{}, waiting={}ms",
+                trace_id,
+                status_code,
+                attempt + 1,
+                MAX_RETRY_ATTEMPTS,
+                duration.as_millis()
+            );
+            sleep(duration).await;
+            true
+        }
+
+        RetryStrategy::LinearBackoff { base_ms } => {
+            let delay_ms = base_ms * (attempt as u64 + 1);
+            info!(
+                "[{}] ⏱️  Retry with linear backoff: status={}, attempt={}/{}, waiting={}ms",
+                trace_id,
+                status_code,
+                attempt + 1,
+                MAX_RETRY_ATTEMPTS,
+                delay_ms
+            );
+            sleep(Duration::from_millis(delay_ms)).await;
+            true
+        }
+
+        RetryStrategy::ExponentialBackoff { base_ms, max_ms } => {
+            let delay_ms = (base_ms * 2_u64.pow(attempt as u32)).min(max_ms);
+            info!(
+                "[{}] ⏱️  Retry with exponential backoff: status={}, attempt={}/{}, waiting={}ms",
+                trace_id,
+                status_code,
+                attempt + 1,
+                MAX_RETRY_ATTEMPTS,
+                delay_ms
+            );
+            sleep(Duration::from_millis(delay_ms)).await;
+            true
+        }
+    }
+}
+
+/// 判断是否应该轮换账号
+fn should_rotate_account(status_code: u16) -> bool {
+    match status_code {
+        // 这些错误是账号级别的，需要轮换
+        429 | 401 | 403 | 500 => true,
+        // 这些错误是服务端级别的，轮换账号无意义
+        400 | 503 | 529 => false,
+        // 其他错误默认不轮换
+        _ => false,
+    }
+}
+
+// ===== 退避策略模块结束 =====
+
 /// 处理 Claude messages 请求
 /// 
 /// 处理 Chat 消息请求流程
@@ -404,23 +541,9 @@ pub async fn handle_messages(
         last_error = format!("HTTP {}: {}", status_code, error_text);
         debug!("[{}] Upstream Error Response: {}", trace_id, error_text);
         
-        // 3. 智能处理 429/529/503/500
+        // 3. 标记限流状态（用于 UI 显示）
         if status_code == 429 || status_code == 529 || status_code == 503 || status_code == 500 {
-            // 记录限流信息 (针对 Claude CLI 优化，使用 email 标识)
             token_manager.mark_rate_limited(&email, status_code, retry_after.as_deref(), &error_text);
-
-            if let Some(delay_ms) = crate::proxy::upstream::retry::parse_retry_delay(&error_text) {
-                let actual_delay = delay_ms.saturating_add(200).min(10_000);
-                tracing::warn!(
-                    "Claude Upstream 429 on account {} attempt {}/{}, waiting {}ms then retrying",
-                    email,
-                    attempt + 1,
-                    max_attempts,
-                    actual_delay
-                );
-                sleep(Duration::from_millis(actual_delay)).await;
-                continue;
-            }
         }
 
         // 4. 处理 400 错误 (Thinking 签名失效)
@@ -435,43 +558,57 @@ pub async fn handle_messages(
             retried_without_thinking = true;
             info!("[{}] Upstream rejected thinking signature; retrying once with thinking stripped", trace_id);
 
-            // 移除 thinking 配置并改名（省略中间逻辑，保持原有逻辑结构）
+            // 移除 thinking 配置
             request_for_body.thinking = None;
+            
+            // 清理历史消息中的 Thinking Block
             for msg in request_for_body.messages.iter_mut() {
                 if let crate::proxy::mappers::claude::models::MessageContent::Array(blocks) = &mut msg.content {
                     blocks.retain(|b| !matches!(b, crate::proxy::mappers::claude::models::ContentBlock::Thinking { .. }));
                 }
             }
+            
+            // 清理模型名中的 -thinking 后缀
             if request_for_body.model.contains("claude-") {
                 let mut m = request_for_body.model.clone();
                 m = m.replace("-thinking", "");
-                if m.contains("claude-sonnet-4-5-") { m = "claude-sonnet-4-5".to_string(); }
-                else if m.contains("claude-opus-4-5-") || m.contains("claude-opus-4-") { m = "claude-opus-4-5".to_string(); }
+                if m.contains("claude-sonnet-4-5-") {
+                    m = "claude-sonnet-4-5".to_string();
+                } else if m.contains("claude-opus-4-5-") || m.contains("claude-opus-4-") {
+                    m = "claude-opus-4-5".to_string();
+                }
                 request_for_body.model = m;
             }
-            continue;
+            
+            // 使用统一退避策略
+            let strategy = determine_retry_strategy(status_code, &error_text, retried_without_thinking);
+            if apply_retry_strategy(strategy, attempt, status_code, &trace_id).await {
+                continue;
+            }
         }
 
-        // 5. 触发账号轮换的常规错误 (增加 529 过载与 503 不可用支持)
-        if status_code == 429 || status_code == 403 || status_code == 401 || status_code == 529 || status_code == 503 {
-            if status_code == 429 && error_text.contains("QUOTA_EXHAUSTED") {
-                error!("Claude Quota exhausted (429) on attempt {}/{}, stopping to protect pool.", attempt + 1, max_attempts);
-                return (status, error_text).into_response();
-            }
-            
-            // 对于服务器过载，额外等待 500ms 以增加重试成功率
-            if status_code == 529 || status_code == 503 {
-                tracing::warn!("Claude Upstream Overloaded ({}) on attempt {}/{}, waiting 500ms then rotating...", status_code, attempt + 1, max_attempts);
-                sleep(Duration::from_millis(500)).await;
-            } else {
-                tracing::warn!("Claude Upstream {} on attempt {}/{}, rotating account", status_code, attempt + 1, max_attempts);
-            }
-            continue;
+        // 5. 统一处理所有可重试错误
+        // 特殊处理：QUOTA_EXHAUSTED 不重试，直接返回保护账号池
+        if status_code == 429 && error_text.contains("QUOTA_EXHAUSTED") {
+            error!("[{}] Quota exhausted (429) on attempt {}/{}, stopping to protect pool.", trace_id, attempt + 1, max_attempts);
+            return (status, error_text).into_response();
         }
         
-        // 6. 不可重试的异常
-        error!("Claude Upstream non-retryable error {}: {}", status_code, error_text);
-        return (status, error_text).into_response();
+        // 确定重试策略
+        let strategy = determine_retry_strategy(status_code, &error_text, retried_without_thinking);
+        
+        // 执行退避
+        if apply_retry_strategy(strategy, attempt, status_code, &trace_id).await {
+            // 判断是否需要轮换账号
+            if !should_rotate_account(status_code) {
+                debug!("[{}] Keeping same account for status {} (server-side issue)", trace_id, status_code);
+            }
+            continue;
+        } else {
+            // 不可重试的错误，直接返回
+            error!("[{}] Non-retryable error {}: {}", trace_id, status_code, error_text);
+            return (status, error_text).into_response();
+        }
     }
     
     (StatusCode::TOO_MANY_REQUESTS, Json(json!({
