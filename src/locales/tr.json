@@ -421,7 +421,13 @@
                 "max_wait": "Maks Bekleme (sn)",
                 "max_wait_tooltip": "Yalnızca 'Önbellek Öncelikli' modunda kullanılır: oran limiti sıfırlama zamanı bu değerin altındaysa geçiş yapmak yerine bekle.",
                 "clear_bindings": "Oturum Bağlantılarını Temizle",
-                "clear_bindings_tooltip": "Tüm oturum-hesap bağlantılarını sert sıfırlama, hesapların bir sonraki istekte yeniden atanmasını zorlar."
+                "clear_bindings_tooltip": "Tüm oturum-hesap bağlantılarını sert sıfırlama, hesapların bir sonraki istekte yeniden atanmasını zorlar.",
+                "rotation_threshold": {
+                    "title": "Claude Kota Rotasyon Eşiği",
+                    "desc": "Düşük Claude kotalı hesapları rotasyondan hariç tut (devre dışı bırakmadan)",
+                    "threshold_label": "Minimum Kota Yüzdesi",
+                    "info": "Bu eşiğin altındaki hesaplar Claude isteklerinde atlanacaktır. TÜM hesaplar eşiğin altındaysa, geri dönüş yerine hata döndürülür."
+                }
             }
         },
         "example": {

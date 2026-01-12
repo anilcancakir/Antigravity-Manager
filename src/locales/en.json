@@ -455,7 +455,13 @@
                 "max_wait": "Max Wait (sec)",
                 "max_wait_tooltip": "Only used in 'Cache First' mode: wait instead of switching if the rate limit reset time is below this value.",
                 "clear_bindings": "Clear Session Bindings",
-                "clear_bindings_tooltip": "Hard reset all session-account bindings, forcing accounts to be re-assigned on next request."
+                "clear_bindings_tooltip": "Hard reset all session-account bindings, forcing accounts to be re-assigned on next request.",
+                "rotation_threshold": {
+                    "title": "Claude Quota Rotation Threshold",
+                    "desc": "Exclude accounts with low Claude quota from rotation (without disabling them)",
+                    "threshold_label": "Minimum Quota Percentage",
+                    "info": "Accounts below this threshold will be skipped during Claude requests. If ALL accounts are below threshold, an error is returned instead of falling back."
+                }
             }
         },
         "example": {

@@ -288,10 +288,10 @@ impl TokenManager {
             Some(m) => m,
             None => return (0, 0),
         };
-        
+
         let mut total = 0;
         let mut remaining = 0;
-        
+
         for model in models {
             if let Some(limit) = model.get("limit").and_then(|v| v.as_i64()) {
                 total += limit as i32;
@@ -300,10 +300,45 @@ impl TokenManager {
                 remaining += rem as i32;
             }
         }
-        
+
         (total, remaining)
     }
-    
+
+    /// 计算账号的最低 Claude 模型配额百分比
+    /// 返回 None 如果没有 Claude 配额数据或无法读取账号文件
+    fn calculate_min_claude_quota_percentage(&self, account_path: &PathBuf) -> Option<i32> {
+        // 读取账号文件
+        let content = std::fs::read_to_string(account_path).ok()?;
+        let account_json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+        // 获取配额模型列表
+        let models = account_json
+            .get("quota")
+            .and_then(|q| q.get("models"))
+            .and_then(|m| m.as_array())?;
+
+        // 提取所有 Claude 模型的百分比
+        let claude_percentages: Vec<i32> = models
+            .iter()
+            .filter_map(|model| {
+                let name = model.get("name")?.as_str()?;
+                // 匹配 Claude 模型: claude-sonnet-4-5, claude-opus-*, etc.
+                if name.starts_with("claude-") || name.contains("claude") {
+                    model.get("percentage").and_then(|p| p.as_i64()).map(|p| p as i32)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if claude_percentages.is_empty() {
+            return None;
+        }
+
+        // 返回最小百分比 (最保守的方法)
+        claude_percentages.into_iter().min()
+    }
+
     /// 触发配额保护，禁用账号
     async fn trigger_quota_protection(
         &self,
@@ -409,6 +444,67 @@ impl TokenManager {
         let total = tokens_snapshot.len();
         if total == 0 {
             return Err("Token pool is empty".to_string());
+        }
+
+        // ===== 【新增】Claude 配额轮转阈值过滤 =====
+        // 只对 Claude 请求应用此过滤
+        let is_claude_request = quota_group == "claude" || quota_group.contains("claude");
+
+        if is_claude_request {
+            if let Ok(config) = crate::modules::config::load_app_config() {
+                if config.quota_protection.rotation_threshold_enabled {
+                    let threshold = config.quota_protection.rotation_threshold_percentage;
+
+                    // 根据 Claude 配额过滤账号
+                    let eligible: Vec<ProxyToken> = tokens_snapshot
+                        .iter()
+                        .filter(|token| {
+                            match self.calculate_min_claude_quota_percentage(&token.account_path) {
+                                Some(pct) if pct >= threshold as i32 => {
+                                    tracing::debug!(
+                                        "轮转阈值: {} 符合条件 (最低 Claude 配额: {}% >= {}%)",
+                                        token.email, pct, threshold
+                                    );
+                                    true
+                                }
+                                Some(pct) => {
+                                    tracing::info!(
+                                        "轮转阈值: 排除 {} (最低 Claude 配额: {}% < {}%)",
+                                        token.email, pct, threshold
+                                    );
+                                    false
+                                }
+                                None => {
+                                    // 没有 Claude 配额数据 - 可能是 Gemini 专用账号，保留
+                                    tracing::debug!(
+                                        "轮转阈值: {} 无 Claude 配额数据，保留",
+                                        token.email
+                                    );
+                                    true
+                                }
+                            }
+                        })
+                        .cloned()
+                        .collect();
+
+                    if eligible.is_empty() {
+                        return Err(format!(
+                            "所有账号的 Claude 配额都低于轮转阈值 ({}%)，无可用账号",
+                            threshold
+                        ));
+                    }
+
+                    if eligible.len() < tokens_snapshot.len() {
+                        tracing::info!(
+                            "轮转阈值: {}/{} 账号符合 Claude 请求条件",
+                            eligible.len(),
+                            tokens_snapshot.len()
+                        );
+                    }
+
+                    tokens_snapshot = eligible;
+                }
+            }
         }
 
         // ===== 【优化】根据订阅等级和剩余配额排序 =====

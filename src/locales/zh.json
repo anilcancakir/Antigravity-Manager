@@ -455,7 +455,13 @@
                 "max_wait": "最大等待时长 (秒)",
                 "max_wait_tooltip": "仅在“缓存优先”模式下生效：如果账号限流重置时间小于此值，则原地等待而非切换账号。",
                 "clear_bindings": "清除会话绑定",
-                "clear_bindings_tooltip": "立即断开所有会话与账号的绑定关系，强制下一次请求重新分配账号。"
+                "clear_bindings_tooltip": "立即断开所有会话与账号的绑定关系，强制下一次请求重新分配账号。",
+                "rotation_threshold": {
+                    "title": "Claude 配额轮转阈值",
+                    "desc": "从轮换中排除低 Claude 配额的账号（不禁用账号）",
+                    "threshold_label": "最低配额百分比",
+                    "info": "低于此阈值的账号将在 Claude 请求期间被跳过。如果所有账号都低于阈值，将返回错误而不是回退。"
+                }
             }
         },
         "example": {

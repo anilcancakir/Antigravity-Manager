@@ -22,7 +22,8 @@ import {
     Activity,
     Check,
     X,
-    Edit2
+    Edit2,
+    Shield
 } from 'lucide-react';
 import { AppConfig, ProxyConfig, StickySessionConfig } from '../types/config';
 import HelpTooltip from '../components/common/HelpTooltip';
@@ -332,6 +333,22 @@ export default function ApiProxy() {
                 ...appConfig.proxy,
                 scheduling: newScheduling
             }
+        };
+        saveConfig(newAppConfig);
+    };
+
+    const updateQuotaProtectionConfig = (updates: Partial<AppConfig['quota_protection']>) => {
+        if (!appConfig) return;
+        const current = appConfig.quota_protection || {
+            enabled: false,
+            threshold_percentage: 10,
+            monitored_models: ['claude-sonnet-4-5'],
+            rotation_threshold_enabled: false,
+            rotation_threshold_percentage: 50,
+        };
+        const newAppConfig = {
+            ...appConfig,
+            quota_protection: { ...current, ...updates }
         };
         saveConfig(newAppConfig);
     };
@@ -1180,6 +1197,69 @@ print(response.text)`;
                                                 </p>
                                             </div>
                                         </div>
+                                    </div>
+
+                                    {/* Claude Quota Rotation Threshold */}
+                                    <div className="mt-6 pt-6 border-t border-gray-100 dark:border-base-200">
+                                        <div className="flex items-center justify-between mb-4">
+                                            <div className="flex items-center gap-3">
+                                                <div className="w-8 h-8 rounded-lg bg-purple-50 dark:bg-purple-900/20 flex items-center justify-center">
+                                                    <Shield size={16} className="text-purple-500" />
+                                                </div>
+                                                <div>
+                                                    <span className="text-xs font-bold text-gray-700 dark:text-gray-300">
+                                                        {t('proxy.config.scheduling.rotation_threshold.title')}
+                                                    </span>
+                                                    <p className="text-[10px] text-gray-500 dark:text-gray-400">
+                                                        {t('proxy.config.scheduling.rotation_threshold.desc')}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <input
+                                                type="checkbox"
+                                                className="toggle toggle-sm toggle-primary"
+                                                checked={appConfig.quota_protection?.rotation_threshold_enabled || false}
+                                                onChange={(e) => updateQuotaProtectionConfig({
+                                                    rotation_threshold_enabled: e.target.checked
+                                                })}
+                                            />
+                                        </div>
+
+                                        {appConfig.quota_protection?.rotation_threshold_enabled && (
+                                            <div className="space-y-4 animate-in slide-in-from-top-1 duration-200">
+                                                <div className="bg-slate-100 dark:bg-slate-800/80 rounded-xl p-4">
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                                                            {t('proxy.config.scheduling.rotation_threshold.threshold_label')}
+                                                        </label>
+                                                        <span className="text-xs font-mono text-purple-600 font-bold">
+                                                            {appConfig.quota_protection?.rotation_threshold_percentage || 50}%
+                                                        </span>
+                                                    </div>
+                                                    <input
+                                                        type="range"
+                                                        min="10"
+                                                        max="90"
+                                                        step="5"
+                                                        className="range range-purple range-xs"
+                                                        value={appConfig.quota_protection?.rotation_threshold_percentage || 50}
+                                                        onChange={(e) => updateQuotaProtectionConfig({
+                                                            rotation_threshold_percentage: parseInt(e.target.value)
+                                                        })}
+                                                    />
+                                                    <div className="flex justify-between px-1 mt-1 text-[10px] text-gray-400 font-mono">
+                                                        <span>10%</span>
+                                                        <span>90%</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="p-3 bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-900/20 rounded-xl">
+                                                    <p className="text-[10px] text-purple-700 dark:text-purple-400 leading-relaxed">
+                                                        <strong>{t('common.info')}:</strong> {t('proxy.config.scheduling.rotation_threshold.info')}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             </CollapsibleCard>

@@ -59,6 +59,8 @@ export interface QuotaProtectionConfig {
     enabled: boolean;
     threshold_percentage: number; // 1-99
     monitored_models: string[];
+    rotation_threshold_enabled: boolean;
+    rotation_threshold_percentage: number; // 1-99
 }
 
 export interface AppConfig {

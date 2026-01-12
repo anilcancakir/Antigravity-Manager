@@ -42,7 +42,9 @@ function Settings() {
         quota_protection: {
             enabled: false,
             threshold_percentage: 10,
-            monitored_models: []
+            monitored_models: [],
+            rotation_threshold_enabled: false,
+            rotation_threshold_percentage: 50
         }
     });
 

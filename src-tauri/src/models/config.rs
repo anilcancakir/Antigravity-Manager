@@ -63,17 +63,30 @@ impl Default for ScheduledWarmupConfig {
 pub struct QuotaProtectionConfig {
     /// 是否启用配额保护
     pub enabled: bool,
-    
+
     /// 保留配额百分比 (1-99)
     pub threshold_percentage: u32,
 
     /// 监控的模型列表 (如 gemini-3-flash, gemini-3-pro-high, claude-sonnet-4-5)
     #[serde(default = "default_monitored_models")]
     pub monitored_models: Vec<String>,
+
+    /// 是否启用轮转配额阈值 (仅过滤轮转,不禁用账号)
+    #[serde(default)]
+    pub rotation_threshold_enabled: bool,
+
+    /// 轮转配额阈值百分比 (1-99)
+    /// 账号的最低 Claude 模型配额百分比必须高于此值才能参与轮转
+    #[serde(default = "default_rotation_threshold")]
+    pub rotation_threshold_percentage: u32,
 }
 
 fn default_monitored_models() -> Vec<String> {
     vec!["claude-sonnet-4-5".to_string()]
+}
+
+fn default_rotation_threshold() -> u32 {
+    50
 }
 
 impl QuotaProtectionConfig {
@@ -82,6 +95,8 @@ impl QuotaProtectionConfig {
             enabled: false,
             threshold_percentage: 10, // 默认保留10%
             monitored_models: default_monitored_models(),
+            rotation_threshold_enabled: false,
+            rotation_threshold_percentage: 50,
         }
     }
 }
